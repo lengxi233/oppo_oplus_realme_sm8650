@@ -1,0 +1,86 @@
+name: 欧加真 6.1.75 Android 15 通用OKI内核
+
+env:
+  TZ: Asia/Shanghai
+  CPU: 'sm8650'
+  FEIL: 'oppo+oplus+realme'
+  ANDROID_VERSION: 'android14'
+  KERNEL_VERSION: '6.1'
+  KERNEL_NAME: 'android14-11-o-gca13bffobf09'
+  KERNELSU_VARIANT: 'SukiSU-Ultra'
+  KERNELSU_BRANCH: 'susfs-main'
+
+on:
+  workflow_dispatch:
+  # 取消此处注释代码可开启每日定时编译
+#  schedule:
+#    - cron: '0 23 * * *'  # UTC时间23点（北京时间次日7点）
+    inputs:
+      hook_method:
+        description: hook模式(大部分情况manual即可，少数需切换sus su模式的场景才需要kprobes钩子)
+        required: false
+        default: 'manual'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 安装配置环境依赖
+        run: |
+          sudo apt update && sudo apt upgrade -y
+          sudo apt-get install curl bison flex make binutils dwarves gcc g++ libssl-dev libelf-dev bc python3 python-is-python3 -y
+          sudo rm -rf ./llvm.sh
+          sudo wget https://apt.llvm.org/llvm.sh
+          sudo chmod +x llvm.sh
+          sudo ./llvm.sh 20 all
+
+      - name: 初始化源码仓库
+        run: |
+          rm -rf kernel_workspace && mkdir kernel_workspace && cd kernel_workspace
+          echo "正在克隆内核源码..."
+          # Realme GT6 的开源内核
+          git clone --depth=1 https://github.com/realme-kernel-opensource/realme_GT6-AndroidV-common-source -b master common
+          echo "正在克隆设备树源码..."
+          # Realme GT6 的开源设备树
+          git clone --depth=1 https://github.com/realme-kernel-opensource/realme_GT6-device-tree -b master device_tree
+          echo "正在去除 ABI 保护 & 去除 dirty 后缀..."
+          rm common/android/abi_gki_protected_exports_* || true
+          for f in common/scripts/setlocalversion; do
+            sed -i 's/ -dirty//g' "$f"
+            sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
+          done
+
+      - name: 添加 SukiSU-Ultra
+        id: ksu_version
+        run: |
+          cd kernel_workspace
+          curl -LSs "https://raw.githubusercontent.com/ShirkNeko/SukiSU-Ultra/refs/heads/main/kernel/setup.sh" | bash -s susfs-main
+          cd ./KernelSU
+
+      - name: 应用内核补丁
+        run: |
+          cd kernel_workspace/common
+          git clone https://github.com/ShirkNeko/susfs4ksu.git -b gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}
+          git clone https://github.com/ShirkNeko/SukiSU_patch.git
+          git clone https://github.com/cctv18/oppo_oplus_realme_sm8650.git
+          # 更多补丁仓库...
+
+      - name: 编译内核
+        run: |
+          cd kernel_workspace
+          export KBUILD_BUILD_USER="GitHub"
+          export KBUILD_BUILD_HOST="Actions"
+          cd common
+          # 使用 Realme GT6 设备树 defconfig
+          make O=out ARCH=arm64 realme_gt6_defconfig
+          make -j$(nproc) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+            LLVM=1 LLVM_IAS=1 AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip
+          # 复制内核镜像
+          cp out/arch/arm64/boot/Image.gz-dtb ../AnyKernel3
+
+      - name: 打包并发布
+        run: |
+          cd kernel_workspace/AnyKernel3
+          zip -r ../release_zips/AnyKernel3_RealmeGT6.zip .
+          # 发布到 GitHub Release 等操作...
